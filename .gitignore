@@ -1,6 +1,7 @@
 # Umgebungsvariablen und vertrauliche Daten
 .env
 .env.*
+!.env.example
 
 # Python-Umgebungen
 venv/

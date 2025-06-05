@@ -1,0 +1,11 @@
+# Format: username[,model][,instruction]
+# Beispiele:
+elonmusk
+BillGates,default,neutral
+navalny,gpt-4o,kritisch
+DocumentingBTC,default,detailliert
+PolitRealist,kurz,positiv
+
+# Hinweis: Zeilen mit # werden ignoriert
+# Verfügbare Modelle: default, kurz, detailliert
+# Verfügbare Instruktionen: default, neutral, kritisch, positiv, detailliert
