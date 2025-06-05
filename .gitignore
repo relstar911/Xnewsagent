@@ -1,0 +1,52 @@
+# Umgebungsvariablen und vertrauliche Daten
+.env
+.env.*
+
+# Python-Umgebungen
+venv/
+venv311/
+env/
+.venv/
+ENV/
+
+# Python-Cache-Dateien
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Distribution / Packaging
+dist/
+build/
+*.egg-info/
+
+# Logs und temporäre Dateien
+*.log
+logs/
+temp/
+tmp/
+
+# Twitter-Accounts und Konfiguration
+accounts.json
+twscrape_accounts.db
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+*.ipynb
+
+# IDE-spezifische Dateien
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Betriebssystem-spezifische Dateien
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Generierte Dateien
+*.db
+*.sqlite
+*.sqlite3
