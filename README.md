@@ -1,4 +1,4 @@
-# Twitter → Telegram KI-Bot (RabbitResearch)
+# Twitter → Telegram KI-Bot 
 
 Dieses Projekt ist ein Telegram-Bot, der Tweets von vorgegebenen Twitter/X-Accounts mit KI zusammenfasst und als satirische, provokante Beiträge unter dem RabbitResearch-Branding in einen Telegram-Kanal postet. Der Bot extrahiert auch Bilder aus Tweets, erkennt externe URLs als Quellen und kann zusätzlich mit DALL-E generierte Bilder hinzufügen.
 
