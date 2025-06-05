@@ -2,6 +2,8 @@
 
 Dieses Projekt ist ein Telegram-Bot, der Tweets von vorgegebenen Twitter/X-Accounts mit KI zusammenfasst und als satirische, provokante Beiträge unter dem RabbitResearch-Branding in einen Telegram-Kanal postet. Der Bot extrahiert auch Bilder aus Tweets, erkennt externe URLs als Quellen und kann zusätzlich mit DALL-E generierte Bilder hinzufügen.
 
+**Aktualisiert:** 05.06.2025 - Verbesserte Medienpriorisierung, Tonalitäts-Waage und Python 3.12 Kompatibilität.
+
 ## Features
 
 - **Hybrid Twitter Scraping**:
@@ -14,11 +16,13 @@ Dieses Projekt ist ein Telegram-Bot, der Tweets von vorgegebenen Twitter/X-Accou
   - Satirischer, provokanter Stil mit Emojis und Aufzählungszeichen
   - Automatische Extraktion externer URLs als nummerierte Quellen
   - Standardisierte Fußzeile mit Social-Media-Links
+  - **NEU:** Tonalitäts-Waage zur automatischen Auswahl des Kommentarstils basierend auf Tweet-Inhalt und Engagement-Metriken
 
 - **Medienunterstützung**:
   - Extraktion von Bildern aus Tweets
   - Optionale Bildgenerierung mit DALL-E
   - Unterstützung für mehrere Bilder pro Nachricht
+  - **NEU:** Intelligente Medienpriorisierung (Tweet-Medien werden bevorzugt, DALL-E als Fallback)
 
 - **Robuste Fehlerbehandlung**:
   - Automatischer Fallback zwischen Scraping-Methoden
@@ -28,10 +32,11 @@ Dieses Projekt ist ein Telegram-Bot, der Tweets von vorgegebenen Twitter/X-Accou
 - **Duplikationserkennung**:
   - Vermeidung von doppelten Tweets durch Hash-basierte Erkennung
   - Persistenter Cache für verarbeitete Tweets
+  - **NEU:** Verbesserte Cache-Verwaltung mit automatischer Bereinigung alter Einträge
 
 ## Setup
 
-1. Erstelle und aktiviere ein Python-Umfeld (Python 3.11+ empfohlen):
+1. Erstelle und aktiviere ein Python-Umfeld (Python 3.12+ empfohlen):
    ```bash
    python -m venv venv311
    # Windows
@@ -61,9 +66,9 @@ Dieses Projekt ist ein Telegram-Bot, der Tweets von vorgegebenen Twitter/X-Accou
 
 4. Erstelle eine `accounts.txt` Datei mit den zu überwachenden Twitter-Accounts:
    ```
-   # Format: username:model:instruction
-   elonmusk:default:neutral
-   navalny:gpt-4o:kritisch
+   # Format: username,model,instruction
+   elonmusk,default,neutral
+   navalny,gpt-4o,kritisch
    BillGates
    ```
 
@@ -78,7 +83,7 @@ Dieses Projekt ist ein Telegram-Bot, der Tweets von vorgegebenen Twitter/X-Accou
 
 In der `accounts.txt` können Accounts im folgenden Format angegeben werden:
 - `username` - Verwendet Standard-Modell und -Instruktion
-- `username:model:instruction` - Mit spezifischem Modell und Instruktion
+- `username,model,instruction` - Mit spezifischem Modell und Instruktion
 
 Verfügbare Modelle:
 - `default` (GPT-4o)
@@ -101,9 +106,42 @@ Verfügbare Instruktionen:
 - Das Nachrichtenformat enthält automatisch eine standardisierte Fußzeile mit Links zu allen Social-Media-Kanälen
 - Externe URLs aus Tweets werden automatisch als nummerierte Quellen extrahiert
 - Der Bot verwendet einen satirischen, provokanten Stil mit Emojis und Aufzählungspunkten
+- **NEU:** Die Tonalitäts-Waage wählt automatisch den passenden Kommentarstil basierend auf Tweet-Inhalt und Engagement-Metriken
+- **NEU:** Verbesserte Benutzernamen-Extraktion mit Fallback auf "RabbitResearch"
+- **NEU:** Python 3.12 kompatible asynchrone Verarbeitung für Telegram-Nachrichten
 
 ## Konfigurationsdateien
 
 - `config.py`: Zentrale Konfigurationsdatei für alle Bot-Einstellungen
 - `.env`: Umgebungsvariablen und API-Schlüssel
 - `accounts.txt`: Liste der zu überwachenden Twitter-Accounts
+- `processed_tweets.json`: Cache-Datei für bereits verarbeitete Tweets
+
+## Technische Details
+
+### Tonalitäts-Waage
+
+Die Tonalitäts-Waage analysiert den Tweet-Inhalt und die Engagement-Metriken, um automatisch den passenden Kommentarstil zu wählen:
+
+- **Neutral**: Standard-Stil für allgemeine Tweets
+- **Kritisch**: Für kontroverse oder politische Themen
+- **Positiv**: Für positive Nachrichten oder Erfolgsgeschichten
+- **Detailliert**: Für komplexe Themen, die eine ausführlichere Analyse erfordern
+
+### Medienpriorisierung
+
+Der Bot priorisiert Medien in folgender Reihenfolge:
+1. Bilder aus dem Original-Tweet (wenn vorhanden)
+2. DALL-E generierte Bilder (wenn keine Tweet-Bilder vorhanden und DISABLE_IMAGE_GENERATION=False)
+
+### Asynchrone Verarbeitung
+
+Der Bot verwendet eine optimierte Mischung aus synchroner und asynchroner Verarbeitung:
+- Synchrone Tweet-Verarbeitung für Einfachheit und Stabilität
+- Asynchrone Telegram-Nachrichtenübermittlung mit korrekter Event-Loop-Verwaltung für Python 3.12 Kompatibilität
+
+### Fehlerbehandlung
+
+- Ausführliche Debug-Ausgaben für Tweet-IDs, Text-Länge und extrahierte Benutzernamen
+- Robuste Exception-Handling mit detaillierten Traceback-Informationen
+- Automatische Wiederherstellung nach temporären Fehlern

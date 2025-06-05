@@ -43,6 +43,9 @@ DALLE_SIZE = "1024x1024"
 DALLE_QUALITY = "standard"
 DALLE_STYLE = "vivid"
 
+# Deaktivierung der Bildgenerierung (für Tests oder wenn API-Kosten gespart werden sollen)
+DISABLE_IMAGE_GENERATION = False
+
 # Standard DALL-E Prompts für verschiedene Themen
 DALLE_PROMPTS = {
     "default": "Erstelle ein realistisches, detailliertes Bild, das die folgende Nachricht illustriert: '{text}'. Das Bild sollte informativ und sachlich sein, ohne politische Symbole oder kontroverse Elemente.",
@@ -95,3 +98,41 @@ PROCESSING_LIMITS = {
 # Direkte Variablen für einfacheren Zugriff
 MAX_ACCOUNTS_PER_RUN = PROCESSING_LIMITS["max_accounts_per_run"]
 MAX_TWEETS_PER_ACCOUNT = PROCESSING_LIMITS["tweets_per_account"]
+
+# Tonalitäts-Waage für automatische Stil-Auswahl
+TONALITY_SCALE = {
+    # Themen-Kategorien und ihre bevorzugten Stile
+    "categories": {
+        "politik": {
+            "keywords": ["regierung", "partei", "wahl", "politik", "demokratie", "parlament", "abgeordnete", "bundestag", "kanzler"],
+            "style": "kritisch"
+        },
+        "wirtschaft": {
+            "keywords": ["wirtschaft", "inflation", "aktien", "börse", "finanzen", "geld", "bank", "euro", "dollar", "währung", "bitcoin", "krypto"],
+            "style": "detailliert"
+        },
+        "technologie": {
+            "keywords": ["tech", "ki", "ai", "künstliche intelligenz", "software", "hardware", "app", "internet", "digital", "computer", "smartphone"],
+            "style": "positiv"
+        },
+        "gesellschaft": {
+            "keywords": ["gesellschaft", "kultur", "sozial", "gemeinschaft", "bildung", "schule", "universität", "familie", "generation"],
+            "style": "neutral"
+        },
+        "verschwörung": {
+            "keywords": ["verschwörung", "geheim", "elite", "nwo", "deep state", "kontrolle", "überwachung", "manipulation", "mainstream", "msm"],
+            "style": "kritisch"
+        },
+        "unterhaltung": {
+            "keywords": ["unterhaltung", "film", "musik", "kunst", "sport", "spiel", "festival", "konzert", "party", "feier", "event"],
+            "style": "default"
+        }
+    },
+    
+    # Tonfall-Intensität basierend auf Tweet-Eigenschaften
+    "intensity": {
+        "high_engagement": 100,  # Schwellenwert für hohe Engagement-Rate
+        "controversial_threshold": 0.4,  # Verhältnis von Kommentaren zu Likes für kontroverse Inhalte
+        "intensity_boost": 1.5  # Multiplikator für satirischen Ton bei kontroversen Themen
+    }
+}

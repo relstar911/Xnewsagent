@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 import os
 import re
@@ -26,7 +24,9 @@ from config import (
     GPT_MODELS, GPT_INSTRUCTIONS, CUSTOM_SYSTEM_INSTRUCTION,
     DALLE_MODEL, DALLE_SIZE, DALLE_QUALITY, DALLE_STYLE, DALLE_PROMPTS,
     TWEET_QUALITY_THRESHOLD, MIN_ENGAGEMENT_TOTAL, MIN_LIKES,
-    NITTER_INSTANCES, DUPLICATE_DETECTION, PROCESSING_LIMITS
+    NITTER_INSTANCES, DUPLICATE_DETECTION,
+    TONALITY_SCALE, MAX_ACCOUNTS_PER_RUN, MAX_TWEETS_PER_ACCOUNT,
+    DISABLE_IMAGE_GENERATION
 )
 
 # ENV laden - mit absolutem Pfad zur .env-Datei
@@ -399,6 +399,44 @@ def summarize_text(text, model_key="default", instruction_key="default"):
         print(f"Fehler beim Zusammenfassen: {e}")
         return f"[Zusammenfassung nicht möglich: {str(e)}]"  # Fallback-Nachricht
 
+# Funktion zur Generierung eines Bild-Prompts basierend auf dem Tweet-Text
+def generate_image_prompt(tweet_text, summary):
+    """
+    Generiert einen Prompt für die Bildgenerierung basierend auf dem Tweet-Text und der Zusammenfassung.
+    
+    Args:
+        tweet_text: Der Text des Tweets
+        summary: Die generierte Zusammenfassung
+        
+    Returns:
+        str: Ein Prompt für die Bildgenerierung oder None, wenn kein Prompt generiert werden konnte
+    """
+    try:
+        # Kombiniere Tweet-Text und Zusammenfassung für besseren Kontext
+        combined_text = f"{tweet_text}\n\n{summary}"
+        
+        # Verwende OpenAI, um einen Bildprompt zu generieren
+        client = OpenAI()
+        completion = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "Du bist ein Experte für die Erstellung von DALL-E Prompts. "
+                                      "Erstelle einen kurzen, prägnanten Prompt (max. 60 Wörter) für DALL-E, "
+                                      "der den Inhalt des Tweets visuell darstellt. "
+                                      "Der Prompt sollte satirisch, überspitzt und visuell interessant sein. "
+                                      "Verwende keine Hashtags oder @-Erwähnungen. "
+                                      "Antworte NUR mit dem Prompt, ohne Einleitung oder Erklärung."},
+                {"role": "user", "content": combined_text}
+            ],
+            max_tokens=100
+        )
+        
+        prompt = completion.choices[0].message.content.strip()
+        return prompt
+    except Exception as e:
+        print(f"Fehler bei der Generierung des Bild-Prompts: {e}")
+        return None
+
 # Beispiel: Bild generieren mit DALL-E
 def generate_image(prompt, topic_key="default"):
     try:
@@ -424,6 +462,212 @@ def generate_image(prompt, topic_key="default"):
     except Exception as e:
         print(f"Fehler bei der Bildgenerierung: {e}")
         return None
+
+# Funktion zur Bestimmung des Kommentarstils basierend auf Tweet-Inhalt
+def determine_comment_style(tweet_text, tweet_data=None):
+    """
+    Bestimmt den passenden Kommentarstil basierend auf dem Tweet-Inhalt und der Tonalitäts-Waage.
+    
+    Args:
+        tweet_text: Der Text des Tweets
+        tweet_data: Optional, ein Dictionary mit zusätzlichen Daten zum Tweet (Likes, Retweets, etc.)
+        
+    Returns:
+        str: Der zu verwendende Kommentarstil (default, kritisch, positiv, detailliert, neutral)
+    """
+    # Standardstil, falls keine Übereinstimmung gefunden wird
+    default_style = "default"
+    
+    # Text für Keyword-Matching vorbereiten (Kleinbuchstaben)
+    text_lower = tweet_text.lower()
+    
+    # Zähler für Kategorie-Matches
+    category_matches = {}
+    
+    # Prüfen, welche Kategorien im Text vorkommen
+    for category, data in TONALITY_SCALE["categories"].items():
+        matches = 0
+        for keyword in data["keywords"]:
+            if keyword.lower() in text_lower:
+                matches += 1
+        
+        if matches > 0:
+            category_matches[category] = matches
+    
+    # Wenn keine Kategorie gefunden wurde, Standard-Stil verwenden
+    if not category_matches:
+        return default_style
+    
+    # Kategorie mit den meisten Übereinstimmungen finden
+    best_category = max(category_matches.items(), key=lambda x: x[1])[0]
+    
+    # Stil der besten Kategorie zurückgeben
+    style = TONALITY_SCALE["categories"][best_category]["style"]
+    
+    # Wenn Tweet-Daten vorhanden sind, Intensität basierend auf Engagement anpassen
+    if tweet_data and "public_metrics" in tweet_data:
+        metrics = tweet_data["public_metrics"]
+        likes = metrics.get("like_count", 0)
+        comments = metrics.get("reply_count", 0)
+        
+        # Prüfen auf kontroverse Inhalte (viele Kommentare im Verhältnis zu Likes)
+        if likes > 0 and comments / likes > TONALITY_SCALE["intensity"]["controversial_threshold"]:
+            # Bei kontroversen Themen den kritischen Stil verstärken
+            if style == "kritisch":
+                style = "sehr_kritisch"
+            elif style == "neutral":
+                style = "kritisch"
+    
+    return style
+
+# Funktion zur Prüfung und Extraktion von Medien aus einem Tweet
+def extract_tweet_media(tweet_data):
+    """
+    Extrahiert Medien (Bilder, Videos) aus einem Tweet.
+    Unterstützt verschiedene Tweet-Strukturen (twscrape und andere Quellen).
+    
+    Args:
+        tweet_data: Dictionary mit Tweet-Daten
+        
+    Returns:
+        dict: Medien-Informationen oder None, wenn keine Medien vorhanden sind
+    """
+    if not tweet_data:
+        return None
+        
+    # Struktur 1: twscrape Format
+    if "media" in tweet_data and tweet_data["media"]:
+        for media in tweet_data["media"]:
+            media_type = media.get("type")
+            
+            # Bild zurückgeben
+            if media_type == "photo":
+                return {
+                    "type": "photo",
+                    "url": media.get("url") or media.get("preview_image_url"),
+                    "alt_text": media.get("alt_text", "")
+                }
+            
+            # Video-Vorschaubild zurückgeben
+            elif media_type in ["video", "animated_gif"]:
+                return {
+                    "type": "video_thumbnail",
+                    "url": media.get("preview_image_url"),
+                    "alt_text": "Video-Vorschaubild"
+                }
+    
+    # Struktur 2: Alte API-Struktur mit "images"-Liste
+    if "images" in tweet_data and isinstance(tweet_data["images"], list) and tweet_data["images"]:
+        # Erstes Bild zurückgeben
+        return {
+            "type": "photo",
+            "url": tweet_data["images"][0],
+            "alt_text": ""
+        }
+    
+    # Struktur 3: Prüfen auf eingebettete URLs mit Vorschaubildern
+    if "entities" in tweet_data and "urls" in tweet_data["entities"]:
+        for url_entity in tweet_data["entities"]["urls"]:
+            if "images" in url_entity and url_entity["images"]:
+                return {
+                    "type": "link_preview",
+                    "url": url_entity["images"][0]["url"],
+                    "alt_text": url_entity.get("description", "Link-Vorschaubild")
+                }
+    
+    return None
+
+# Funktion zum Senden einer Nachricht an Telegram
+async def send_telegram_message(tweet_data, summary, tweet_url, image_url=None, media_data=None):
+    """
+    Sendet eine formatierte Nachricht mit dem Tweet und der KI-Zusammenfassung an den Telegram-Kanal.
+    
+    Args:
+        tweet_data: Dictionary mit Tweet-Daten
+        summary: Die KI-generierte Zusammenfassung
+        tweet_url: URL zum Original-Tweet
+        image_url: Optional, URL zu einem generierten Bild
+        media_data: Optional, Dictionary mit Medien-Daten aus dem Tweet
+    """
+    try:
+        # Extrahiere den Benutzernamen aus dem Tweet mit verschiedenen möglichen Strukturen
+        username = "Unbekannt"
+        if "user" in tweet_data and isinstance(tweet_data["user"], dict) and "username" in tweet_data["user"]:
+            username = tweet_data["user"]["username"]
+        elif "username" in tweet_data:
+            username = tweet_data["username"]
+        
+        # Extrahiere externe URLs aus dem Tweet-Text für Quellenangaben
+        tweet_text = tweet_data.get("text", "")
+        external_urls = extract_urls_from_text(tweet_text)
+        
+        # Formatiere die Nachricht mit Emojis und Aufzählungspunkten
+        message = f"{username}\n\n{summary}\n\n"
+        
+        # Füge Quellenangaben hinzu
+        sources = []
+        sources.append(f"Original-Tweet ({tweet_url})")
+        sources.append(f"@{username} auf X (https://twitter.com/{username})")
+        
+        # Füge externe URLs als Quellen hinzu
+        for i, url in enumerate(external_urls, start=3):
+            sources.append(url)
+        
+        # Formatiere die Quellenangaben
+        if sources:
+            message += "\nQuellen:\n"
+            for i, source in enumerate(sources, start=1):
+                message += f"{i} ({source}) - "
+            # Entferne das letzte " - "
+            message = message[:-3]
+        
+        # Füge die Fußzeile mit Social-Media-Links hinzu
+        message += "\n\nauf telegram (http://t.me/rabbitresearch) 👉auf substack (https://rabbitresearch.substack.com/) 👉auf youtube (https://www.youtube.com/c/RabbitResearch/videos) 👉auf odyssee (https://odysee.com/@rabbitresearch:3) 👉auf X (https://twitter.com/real___rabbit)"
+        
+        # Medien-Priorität: 1. Tweet-Medien, 2. DALL-E generiertes Bild
+        media_to_send = None
+        caption = message
+        
+        # Prüfe, ob Tweet-Medien vorhanden sind
+        if media_data and media_data.get("url"):
+            # Verwende Medien aus dem Tweet
+            media_to_send = media_data.get("url")
+            print(f"Verwende Medien aus dem Tweet: {media_to_send}")
+        elif image_url:
+            # Verwende DALL-E generiertes Bild als Fallback
+            media_to_send = image_url
+            print(f"Verwende DALL-E generiertes Bild: {media_to_send}")
+        
+        # Sende die Nachricht mit Medien, falls vorhanden
+        if media_to_send:
+            # Prüfe, ob die Caption zu lang ist (Telegram-Limit: 1024 Zeichen)
+            if len(caption) > 1024:
+                # Kürze die Caption auf 1021 Zeichen und füge "..." hinzu
+                caption = caption[:1021] + "..."
+                
+            # Sende Foto mit Caption
+            await bot.send_photo(chat_id=TELEGRAM_CHANNEL_ID, photo=media_to_send, caption=caption, parse_mode="HTML")
+        else:
+            # Sende nur Text, wenn keine Medien vorhanden sind
+            await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=message, parse_mode="HTML")
+            
+        # Kurze Pause, um Telegram-API nicht zu überlasten
+        await asyncio.sleep(1)
+        
+        return True
+    except Exception as e:
+        print(f"Fehler beim Senden der Telegram-Nachricht: {e}")
+        # Bei zu langer Nachricht versuche ohne Medien zu senden
+        if "caption is too long" in str(e).lower():
+            try:
+                # Sende Text und Medien getrennt
+                if media_to_send:
+                    await bot.send_photo(chat_id=TELEGRAM_CHANNEL_ID, photo=media_to_send)
+                await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=message, parse_mode="HTML")
+                return True
+            except Exception as inner_e:
+                print(f"Auch alternativer Sendeversuch fehlgeschlagen: {inner_e}")
+        return False
 
 # Telegram-Posting mit Unterstützung für mehrere Bilder (asynchron)
 async def post_to_telegram(summary, image_urls=None, tweet_images=None):
@@ -507,6 +751,35 @@ def send_to_telegram(summary, image_url=None, tweet_images=None):
             print(f"Auch Textnachricht fehlgeschlagen: {e2}")
             return None
     
+# Funktion zum Markieren eines Tweets als verarbeitet
+def mark_tweet_as_processed(tweet_text, tweet_id=None, cache_file="processed_tweets.json"):
+    """Markiert einen Tweet als verarbeitet, indem er zum Cache hinzugefügt wird."""
+    # Hash des Tweet-Inhalts erstellen
+    tweet_hash = hashlib.md5(tweet_text.encode('utf-8')).hexdigest()
+    
+    # Cache laden oder erstellen
+    processed_tweets = {}
+    try:
+        if os.path.exists(cache_file):
+            with open(cache_file, "r", encoding="utf-8") as f:
+                processed_tweets = json.load(f)
+    except Exception as e:
+        print(f"Fehler beim Laden des Tweet-Caches: {e}")
+    
+    # Tweet zum Cache hinzufügen
+    processed_tweets[tweet_hash] = {
+        "timestamp": time.time(),
+        "preview": tweet_text[:50] + "..." if len(tweet_text) > 50 else tweet_text,
+        "id": tweet_id  # ID speichern, falls vorhanden
+    }
+    
+    # Cache speichern
+    try:
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(processed_tweets, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Fehler beim Speichern des Tweet-Caches: {e}")
+
 # Funktion zur Überprüfung von Duplikaten
 def is_duplicate_tweet(tweet_text, cache_file="processed_tweets.json", tweet_id=None):
     """Überprüft, ob ein Tweet bereits verarbeitet wurde, basierend auf einem Hash des Inhalts oder der Tweet-ID."""
@@ -569,43 +842,6 @@ def is_duplicate_tweet(tweet_text, cache_file="processed_tweets.json", tweet_id=
             print(f"Fehler beim Speichern des Tweet-Caches: {e}")
     
     return is_duplicate
-
-# Konfiguration aus Datei laden (optional)
-def load_account_config(filename="accounts.txt"):
-    """Lädt Twitter-Accounts mit optionalen GPT-Einstellungen aus einer Datei.
-    Format: username,model_key,instruction_key
-    Beispiel: elonmusk,default,neutral
-    """
-    accounts_config = []
-    try:
-        with open(filename, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                    
-                # Kommaseparierte Werte verarbeiten
-                parts = line.split(",")
-                if not parts[0]:
-                    continue
-                    
-                config = {
-                    "username": parts[0].strip(),
-                    "model": "default",
-                    "instruction": "default"
-                }
-                
-                # Optionale Konfiguration für GPT-Modell und Instruktion
-                if len(parts) >= 2:
-                    config["model"] = parts[1].strip()
-                if len(parts) >= 3:
-                    config["instruction"] = parts[2].strip()
-                    
-                accounts_config.append(config)
-        return accounts_config
-    except Exception as e:
-        print(f"Fehler beim Laden der Account-Konfiguration: {e}")
-        return []
 
 # Funktion zur Bewertung der Tweet-Qualität
 def evaluate_tweet_quality(tweet_text, tweet_data=None):
@@ -693,170 +929,227 @@ def evaluate_tweet_quality(tweet_text, tweet_data=None):
     
     return score, ", ".join(reasons)
 
+# Funktion zum Extrahieren von URLs aus einem Text
+def extract_urls_from_text(text):
+    import re
+    url_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+[\w/\-?=%.#+&;]*'
+    return re.findall(url_pattern, text)
+
+# Funktion zum Verarbeiten eines Tweets
+def process_tweet(tweet_data, account_config):
+    """
+    Verarbeitet einen einzelnen Tweet und sendet ihn an Telegram.
+    
+    Args:
+        tweet_data: Dictionary mit Tweet-Daten
+        account_config: Konfiguration für den Account
+        
+    Returns:
+        bool: True, wenn der Tweet erfolgreich verarbeitet wurde
+    """
+    try:
+        tweet_id = tweet_data.get("id")
+        tweet_text = tweet_data.get("text", "")
+        
+        print(f"DEBUG: Tweet-ID: {tweet_id}, Tweet-Text-Länge: {len(tweet_text)}")
+        
+        # Benutzername aus verschiedenen möglichen Strukturen extrahieren
+        username = "RabbitResearch"  # Standardwert, wenn kein Benutzername gefunden wird
+        
+        # Versuche, den Benutzernamen aus verschiedenen möglichen Strukturen zu extrahieren
+        if "user" in tweet_data:
+            if isinstance(tweet_data["user"], dict):
+                if "username" in tweet_data["user"]:
+                    username = tweet_data["user"]["username"]
+                elif "screen_name" in tweet_data["user"]:
+                    username = tweet_data["user"]["screen_name"]
+        elif "username" in tweet_data:
+            username = tweet_data["username"]
+        elif "screen_name" in tweet_data:
+            username = tweet_data["screen_name"]
+        elif "author" in tweet_data and isinstance(tweet_data["author"], dict):
+            if "username" in tweet_data["author"]:
+                username = tweet_data["author"]["username"]
+            elif "screen_name" in tweet_data["author"]:
+                username = tweet_data["author"]["screen_name"]
+        
+        print(f"DEBUG: Extrahierter Benutzername: {username}")
+        
+        tweet_url = f"https://twitter.com/{username}/status/{tweet_id}"
+        
+        # Prüfe, ob der Tweet bereits verarbeitet wurde
+        if is_duplicate_tweet(tweet_text, tweet_id=tweet_id):
+            print(f"Tweet {tweet_id} wurde bereits verarbeitet. Überspringe.")
+            return False
+            
+        # Bewerte die Qualität des Tweets
+        quality_score, quality_reason = evaluate_tweet_quality(tweet_text, tweet_data)
+        if quality_score < TWEET_QUALITY_THRESHOLD:
+            print(f"Tweet {tweet_id} hat eine zu niedrige Qualität ({quality_score}): {quality_reason}")
+            return False
+            
+        # Bestimme den Kommentarstil basierend auf dem Tweet-Inhalt
+        comment_style = determine_comment_style(tweet_text, tweet_data)
+        print(f"Verwende Kommentarstil: {comment_style} für Tweet {tweet_id}")
+        
+        # Passe die Instruktion basierend auf dem Stil an
+        instruction = account_config.get("instruction", "default")
+        if comment_style != "default":
+            instruction = comment_style
+            
+        # Extrahiere Medien aus dem Tweet
+        media_data = extract_tweet_media(tweet_data)
+        
+        # Generiere eine KI-Zusammenfassung
+        summary = summarize_text(tweet_text, account_config.get("model", "default"), instruction)
+        if not summary:
+            print(f"Konnte keine Zusammenfassung für Tweet {tweet_id} generieren.")
+            return False
+            
+        # Generiere nur ein Bild, wenn keine Tweet-Medien vorhanden sind
+        image_url = None
+        if not media_data and not DISABLE_IMAGE_GENERATION:
+            image_prompt = generate_image_prompt(tweet_text, summary)
+            if image_prompt:
+                image_url = generate_image(image_prompt)
+                
+        # Sende die Nachricht an Telegram
+        # Da send_telegram_message asynchron ist, müssen wir es mit asyncio ausführen
+        # Wir erstellen einen neuen Event-Loop für jeden Tweet, um Probleme mit geschlossenen Loops zu vermeiden
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            success = loop.run_until_complete(send_telegram_message(tweet_data, summary, tweet_url, image_url, media_data))
+        finally:
+            loop.close()
+        
+        # Markiere den Tweet als verarbeitet
+        if success:
+            mark_tweet_as_processed(tweet_text, tweet_id)
+            
+        return success
+    except Exception as e:
+        import traceback
+        print(f"Fehler bei der Verarbeitung des Tweets: {e}")
+        print("Detaillierter Fehler:")
+        traceback.print_exc()
+        return False
+
+# Funktion zum Laden der Account-Konfiguration
+def load_account_config(filename="accounts.txt"):
+    """Lädt Twitter-Accounts mit optionalen GPT-Einstellungen aus einer Datei.
+    Format: username,model_key,instruction_key
+    Beispiel: elonmusk,default,neutral
+    """
+    accounts_config = []
+    try:
+        with open(filename, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                    
+                # Kommaseparierte Werte verarbeiten
+                parts = line.split(",")
+                if not parts[0]:
+                    continue
+                    
+                config = {
+                    "username": parts[0].strip(),
+                    "model": "default",
+                    "instruction": "default"
+                }
+                
+                # Optionale Konfiguration für GPT-Modell und Instruktion
+                if len(parts) >= 2:
+                    config["model"] = parts[1].strip()
+                if len(parts) >= 3:
+                    config["instruction"] = parts[2].strip()
+                    
+                accounts_config.append(config)
+        return accounts_config
+    except Exception as e:
+        print(f"Fehler beim Laden der Account-Konfiguration: {e}")
+        return []
+
 if __name__ == "__main__":
     # Accounts mit Konfiguration laden
     accounts_config = load_account_config()
     
+    # Wenn keine Accounts gefunden wurden, Standardaccounts verwenden
     if not accounts_config:
-        print("Keine Accounts gefunden oder Fehler beim Laden. Beende Programm.")
-        exit(1)
+        accounts_config = [
+            {"username": "elonmusk", "model": "default", "instruction": "default"},
+            {"username": "BillGates", "model": "default", "instruction": "default"}
+        ]
     
-    # Zufällige Reihenfolge der Accounts erstellen
-    import random
+    # Zufällige Reihenfolge der Accounts
     random.shuffle(accounts_config)
     
-    print(f"Verarbeite {len(accounts_config)} Twitter-Accounts in zufälliger Reihenfolge")
-    for account_index, account in enumerate(accounts_config):
-        # Maximale Anzahl der zu verarbeitenden Accounts aus Konfiguration verwenden
-        max_accounts_per_run = min(PROCESSING_LIMITS["max_accounts_per_run"], len(accounts_config))
-        if account_index >= max_accounts_per_run:
-            print(f"\nLimit von {max_accounts_per_run} Accounts erreicht. Restliche Accounts werden beim nächsten Lauf verarbeitet.")
-            break
+    print(f"Verarbeite {len(accounts_config)} Twitter-Accounts in zufälliger Reihenfolge\n")
+    
+    # Begrenze die Anzahl der zu verarbeitenden Accounts
+    accounts_to_process = accounts_config[:MAX_ACCOUNTS_PER_RUN]
+    
+    # Verarbeite jeden Account
+    for i, account_config in enumerate(accounts_to_process, 1):
+        username = account_config["username"]
+        model_key = account_config.get("model", "default")
+        instruction_key = account_config.get("instruction", "default")
+        
+        print(f"[{i}/{len(accounts_to_process)}] Account: {username} | Modell: {model_key} | Instruktion: {instruction_key}")
+        
         try:
-            username = account["username"]
-            model_key = account.get("model", "default")
-            instruction_key = account.get("instruction", "default")
+            # Hole Tweets für den Account mit der bestehenden Funktion
+            tweets = get_latest_tweets(username)
             
-            print(f"\n[{account_index+1}/{len(accounts_config)}] Account: {username} | Modell: {model_key} | Instruktion: {instruction_key}")
-            
-            # Tweets abrufen
-            try:
-                tweets = get_latest_tweets(username)
-                print(f"Gefundene Tweets für {username}: {len(tweets)}")
-                
-                if not tweets:
-                    print(f"Keine Tweets für {username} gefunden, überspringe Account.")
-                    continue
-            except Exception as e:
-                print(f"Fehler beim Abrufen von Tweets für {username}: {e}")
-                print(f"\u00dcberspringe Account {username} und fahre mit dem nächsten fort.")
+            if not tweets:
+                print(f"Keine Tweets für {username} gefunden. Überspringe diesen Account.")
                 continue
+                
+            print(f"Gefundene Tweets für {username}: {len(tweets)}")
             
-            for tweet_index, tweet in enumerate(tweets):
+            # Verarbeite die neuesten Tweets (begrenzt durch MAX_TWEETS_PER_ACCOUNT)
+            for j, tweet in enumerate(tweets[:MAX_TWEETS_PER_ACCOUNT], 1):
+                tweet_text = tweet.get("text", "")
+                tweet_id = tweet.get("id")
+                
+                print(f"\n  Tweet {j}/{min(len(tweets), MAX_TWEETS_PER_ACCOUNT)} verarbeiten:")
+                print(f"  Tweet-Text: {tweet_text[:80]}...")
+                
+                # Bewerte die Qualität des Tweets
+                quality_score, quality_reason = evaluate_tweet_quality(tweet_text, tweet)
+                
+                # Engagement-Metriken anzeigen
+                engagement = 0
+                if "public_metrics" in tweet:
+                    likes = tweet["public_metrics"].get("like_count", 0)
+                    retweets = tweet["public_metrics"].get("retweet_count", 0)
+                    replies = tweet["public_metrics"].get("reply_count", 0)
+                    engagement = likes + retweets + replies
+                    print(f"  Qualitätsbewertung: {quality_score:.2f} ({quality_reason}) | Engagement: {engagement} (👍 {likes}, 🔄 {retweets}, 💬 {replies})")
+                else:
+                    print(f"  Qualitätsbewertung: {quality_score:.2f} ({quality_reason})")
+                
+                # Wenn die Qualität zu niedrig ist, überspringe diesen Tweet
+                if quality_score < TWEET_QUALITY_THRESHOLD:
+                    print(f"  Tweet hat eine zu niedrige Qualität ({quality_score:.2f}). Überspringe.")
+                    continue
+                
                 try:
-                    print(f"\n  Tweet {tweet_index+1}/{len(tweets)} verarbeiten:")
-                    # Extrahiere Text und Bilder aus dem Tweet
-                    tweet_text = tweet["text"] if isinstance(tweet, dict) and "text" in tweet else tweet
-                    tweet_images = tweet.get("images", []) if isinstance(tweet, dict) else []
+                    # Verwende die neue process_tweet-Funktion
+                    print(f"  Verarbeite Tweet mit der neuen Medien-Priorisierung und Tonalitäts-Waage...")
                     
-                    if not tweet_text or len(tweet_text.strip()) < 10:
-                        print(f"  Tweet hat zu wenig Text, überspringe: {tweet_text}")
-                        continue
-                        
-                    print(f"  Tweet-Text: {tweet_text[:100]}..." if len(tweet_text) > 100 else f"  Tweet-Text: {tweet_text}")
+                    # Direkter Aufruf der synchronen process_tweet-Funktion
+                    success = process_tweet(tweet, account_config)
                     
-                    # Qualitätsbewertung des Tweets durchführen (mit Engagement-Metriken)
-                    quality_score, quality_reasons = evaluate_tweet_quality(tweet_text, tweet)
-                    
-                    # Engagement-Metriken anzeigen, wenn verfügbar
-                    engagement_info = ""
-                    if isinstance(tweet, dict):
-                        likes = tweet.get("likes", 0)
-                        retweets = tweet.get("retweets", 0)
-                        replies = tweet.get("replies", 0)
-                        total = tweet.get("engagement_total", 0)
-                        if total > 0:
-                            engagement_info = f" | Engagement: {total} (👍 {likes}, 🔄 {retweets}, 💬 {replies})"
-                    
-                    print(f"  Qualitätsbewertung: {quality_score:.2f} ({quality_reasons}){engagement_info}")
-                    
-                    # Optional: Tweets mit zu niedriger Qualität überspringen
-                    if quality_score < TWEET_QUALITY_THRESHOLD:
-                        print(f"  Tweet hat zu niedrige Qualität ({quality_score:.2f}), überspringe.")
-                        continue
-                    
-                    if tweet_images:
-                        print(f"  Tweet enthält {len(tweet_images)} Bilder")
-                    
-                    # Duplikationsprüfung mit Tweet-ID, falls vorhanden
-                    tweet_id = tweet.get("id", None) if isinstance(tweet, dict) else None
-                    if is_duplicate_tweet(tweet_text, tweet_id=tweet_id):
-                        print(f"  Tweet bereits verarbeitet, überspringe.")
-                        continue
-                    
-                    # Zusammenfassung mit benutzerdefinierten Einstellungen erstellen
-                    try:
-                        print(f"  Erstelle Zusammenfassung für Tweet von {username}...")
-                        summary = summarize_text(tweet_text, model_key=model_key, instruction_key=instruction_key)
-                    except Exception as e:
-                        print(f"  Fehler bei der Zusammenfassung: {e}")
-                        print(f"  Überspringe diesen Tweet und fahre mit dem nächsten fort.")
-                        continue
-                    
-                    # Bild generieren (optional)
-                    dall_e_image = None
-                    try:
-                        print("  Generiere Bild mit DALL-E...")
-                        dall_e_image = generate_image(summary)
-                        # Kurze Pause zwischen API-Aufrufen
-                        time.sleep(1)
-                    except Exception as e:
-                        print(f"  Fehler bei der Bildgenerierung: {e}")
-                        print("  Fahre ohne generiertes Bild fort.")
-                    
-                    # An Telegram senden
-                    # Link zum Original-Tweet hinzufügen, wenn verfügbar
-                    tweet_url = tweet.get("url", "") if isinstance(tweet, dict) else ""
-                    
-                    # Quellen für den Inhalt vorbereiten
-                    content_sources = []
-                    
-                    # Immer den Original-Tweet als erste Quelle hinzufügen, wenn verfügbar
-                    if tweet_url:
-                        content_sources.append(f"1 (<a href=\"{tweet_url}\">Original-Tweet</a>)")
-                    
-                    # Twitter/X Profil-Link als zusätzliche Quelle hinzufügen
-                    twitter_url = f"https://twitter.com/{username}"
-                    if len(content_sources) == 0:
-                        content_sources.append(f"1 (<a href=\"{twitter_url}\">@{username} auf X</a>)")
+                    if success:
+                        print("  Tweet erfolgreich verarbeitet und an Telegram gesendet!")
                     else:
-                        content_sources.append(f"2 (<a href=\"{twitter_url}\">@{username} auf X</a>)")
+                        print("  Fehler bei der Verarbeitung des Tweets.")
                     
-                    # Externe URLs aus dem Tweet extrahieren und als Quellen hinzufügen
-                    import re
-                    url_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+[\w/\-?=%.#+&;]*'
-                    urls = re.findall(url_pattern, tweet_text)
-                    
-                    # Nur externe URLs hinzufügen (nicht Twitter/X URLs)
-                    external_urls = [url for url in urls if 'twitter.com' not in url and 'x.com' not in url]
-                    
-                    # Als Quellen hinzufügen
-                    for i, url in enumerate(external_urls):
-                        source_number = len(content_sources) + 1
-                        content_sources.append(f"{source_number} (<a href=\"{url}\">{url}</a>)")
-                        
-                    # Maximal 5 Quellen anzeigen, um die Nachricht nicht zu lang zu machen
-                    if len(content_sources) > 5:
-                        content_sources = content_sources[:5]
-                    
-                    # Quellen-Block erstellen, wenn vorhanden
-                    sources_block = ""
-                    if content_sources:
-                        sources_block = "Quellen:\n" + " - ".join(content_sources) + "\n\n"
-                    
-                    # Feste Fußzeile mit Social-Media-Links
-                    footer = "auf telegram (<a href=\"http://t.me/rabbitresearch\">http://t.me/rabbitresearch</a>) "
-                    footer += "👉auf substack (<a href=\"https://rabbitresearch.substack.com/\">https://rabbitresearch.substack.com/</a>) "
-                    footer += "👉auf youtube (<a href=\"https://www.youtube.com/c/RabbitResearch/videos\">https://www.youtube.com/c/RabbitResearch/videos</a>) "
-                    footer += "👉auf odyssee (<a href=\"https://odysee.com/@rabbitresearch:3\">https://odysee.com/@rabbitresearch:3</a>) "
-                    footer += "👉auf X (<a href=\"https://twitter.com/real___rabbit\">https://twitter.com/real___rabbit</a>)"
-                    footer += "\n--"
-                    
-                    # Nachricht im neuen satirischen Format erstellen
-                    formatted_message = f"<b>RabbitResearch</b>\n\n{summary}\n\n{sources_block}{footer}"
-                        
-                    print(f"  Sende an Telegram-Kanal {TELEGRAM_CHANNEL_ID}...")
-                    
-                    # Senden mit Fehlerbehandlung und Wartezeit
-                    try:
-                        send_to_telegram(formatted_message, dall_e_image, tweet_images)
-                        print("  Erfolgreich an Telegram gesendet!")
-                        # Kurze Pause zwischen Telegram-Nachrichten
-                        time.sleep(2)
-                    except Exception as e:
-                        print(f"  Fehler beim Senden an Telegram: {e}")
-                        # Bei Fehler längere Pause
-                        time.sleep(5)
+                    # Kurze Pause zwischen Tweets
+                    time.sleep(2)
                         
                 except Exception as tweet_error:
                     print(f"  Fehler bei der Verarbeitung des Tweets: {tweet_error}")
@@ -865,7 +1158,7 @@ if __name__ == "__main__":
                     
         except Exception as account_error:
             print(f"Fehler bei der Verarbeitung des Accounts: {account_error}")
-            print(f"\u00dcberspringe diesen Account und fahre mit dem nächsten fort.")
+            print(f"Überspringe diesen Account und fahre mit dem nächsten fort.")
             continue
             
     print("\nVerarbeitung aller Accounts abgeschlossen.")
